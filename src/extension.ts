@@ -50,9 +50,9 @@ const DIR_END_CHAR = isWindows ? SEPARATOR : ''; // need \\ for windows
 const Q = isWindows ? '' : '"';
 const CONFIG_OBJ = isWindows ? {env: {NL: '^& echo.', AMP: '^^^&', PIPE: '^^^|', CHEV: '^^^>'}} : null;
 
-const getDocCopy = (docText) => (
-    isWindows ?
-    docText.replace(/\r\n/g, '%NL%').replace(/\&/g, '%AMP%').replace(/\|/g, '%PIPE%').replace(/\>/g, '%CHEV%') :
+const getDocCopy = isWindows ? (docText) => (
+    docText.replace(/\r\n/g, '%NL%').replace(/\&/g, '%AMP%').replace(/\|/g, '%PIPE%').replace(/\>/g, '%CHEV%')
+) : (docText) => (
     docText.replace(/\$/g, '\\$').replace(/\"/g, '\\"')
 );
 
@@ -94,92 +94,93 @@ class ErrorFinder {
         let doc = editor.document;
 
         // Only find errors if doc languageId is in languages array
-        if (~languages.indexOf(doc.languageId)) {
-            const dir = (workspace.rootPath || '') + SEPARATOR; // workspace.rootPath may be null on windows
-            const fileName = doc.fileName.replace(dir, '');
-            const docCopy = getDocCopy(doc.getText());
-            let configFileDir = configDir;
-            let cmd = `cd "${dir}" && echo ${Q}${docCopy}${Q}| scss-lint -c "${configFileDir + '.scss-lint.yml'}" --no-color --stdin-file-path="${fileName}"`;
-
-            if (!configDir) {
-                // Find and set nearest config file
-                try {
-                    const startingDir = doc.fileName.substring(0, doc.fileName.lastIndexOf(SEPARATOR));
-                    configFileDir = findParentDir.sync(startingDir, '.scss-lint.yml') + DIR_END_CHAR;
-                    cmd = `echo ${Q}${docCopy}${Q}| scss-lint -c "${configFileDir + '.scss-lint.yml'}" --no-color --stdin-file-path="${doc.fileName}"`;
-                } catch(err) {
-                    console.error('error', err);
-                }
-            }
-
-            exec(cmd, CONFIG_OBJ, (err, stdout) => {
-                const lines = stdout.toString().split('\n');
-
-                const {
-                    exits,
-                    errors,
-                    warnings,
-                    diagnostics,
-                } = lines.reduce((a, line) => {
-                    let info,
-                        severity;
-
-                    line = line.trim();
-
-                    if(~line.indexOf('[E]')) {
-                        info = line.match(/[^:]*:(\d+):(\d+) \[E\] (.*)$/);
-                        severity = DiagnosticSeverity.Error;
-                    } else if(~line.indexOf('[W]')) {
-                        info = line.match(/[^:]*:(\d+):(\d+) \[W\] (.*)$/);
-                        severity = DiagnosticSeverity.Warning;
-                    } else if (line) {
-                        info = [1, 1, 1, 'Error running scss-lint: ' + line];
-                    } else {
-                        return a;
-                    }
-
-                    const lineNum = parseInt(info[1], 10) - 1;
-                    const startPos = parseInt(info[2], 10) - 1;
-                    const message = info[3];
-                    const range = new Range(lineNum, startPos, lineNum + 1, 0);
-
-                    if(severity === DiagnosticSeverity.Error) {
-                        a.errors.push({ range, message });
-                        a.diagnostics.push(new Diagnostic(range, message, severity));
-                    } else if(severity === DiagnosticSeverity.Warning) {
-                        a.warnings.push({ range, message });
-                        a.diagnostics.push(new Diagnostic(range, message, severity));
-                    } else {
-                        severity === DiagnosticSeverity.Error;
-                        a.exits.push(new Diagnostic(range, message, severity));
-                    }
-
-                    return a;
-                }, {
-                    exits: [],
-                    errors: [],
-                    warnings: [],
-                    diagnostics: [],
-                });
-
-                if (editor === window.activeTextEditor) {
-                    if (showHighlights) {
-                        editor.setDecorations(errorDecorationType, errors);
-                        editor.setDecorations(warningDecorationType, warnings);
-                    }
-
-                    const configUri = Uri.parse(configFileDir + '.scss-lint.yml').with({scheme: 'file'});
-                    this._diagnosticCollection.set(configUri, exits);
-                    this._diagnosticCollection.set(doc.uri, diagnostics);
-
-                    // Update the status bar
-                    this._statusBarItem.text = eval(statusBarText);
-                    this._statusBarItem.show();
-                }
-            });
-        } else {
+        if (!~languages.indexOf(doc.languageId)) {
             this._statusBarItem.hide();
+            return;
         }
+
+        const dir = (workspace.rootPath || '') + SEPARATOR; // workspace.rootPath may be null on windows
+        const fileName = doc.fileName.replace(dir, '');
+        const docCopy = getDocCopy(doc.getText());
+        let configFileDir = configDir;
+
+        if (!configDir) {
+            // Find and set nearest config file
+            try {
+                const startingDir = doc.fileName.substring(0, doc.fileName.lastIndexOf(SEPARATOR));
+                configFileDir = findParentDir.sync(startingDir, '.scss-lint.yml') + DIR_END_CHAR;
+            } catch(err) {
+                console.error('error', err);
+            }
+        }
+
+        const cmd = `cd "${dir}" && echo ${Q}${docCopy}${Q}| scss-lint -c "${configFileDir + '.scss-lint.yml'}" --no-color --stdin-file-path="${fileName}"`;
+
+        exec(cmd, CONFIG_OBJ, (err, stdout) => {
+            const lines = stdout.toString().split('\n');
+
+            const {
+                exits,
+                errors,
+                warnings,
+                diagnostics,
+            } = lines.reduce((a, line) => {
+                let info,
+                    severity;
+
+                line = line.trim();
+
+                if(~line.indexOf('[E]')) {
+                    info = line.match(/[^:]*:(\d+):(\d+) \[E\] (.*)$/);
+                    severity = DiagnosticSeverity.Error;
+                } else if(~line.indexOf('[W]')) {
+                    info = line.match(/[^:]*:(\d+):(\d+) \[W\] (.*)$/);
+                    severity = DiagnosticSeverity.Warning;
+                } else if (line) {
+                    info = [1, 1, 1, 'Error running scss-lint: ' + line];
+                } else {
+                    return a;
+                }
+
+                const lineNum = parseInt(info[1], 10) - 1;
+                const startPos = parseInt(info[2], 10) - 1;
+                const message = info[3];
+                const range = new Range(lineNum, startPos, lineNum + 1, 0);
+
+                if(severity === DiagnosticSeverity.Error) {
+                    a.errors.push({ range, message });
+                    a.diagnostics.push(new Diagnostic(range, message, severity));
+                } else if(severity === DiagnosticSeverity.Warning) {
+                    a.warnings.push({ range, message });
+                    a.diagnostics.push(new Diagnostic(range, message, severity));
+                } else {
+                    severity === DiagnosticSeverity.Error;
+                    a.exits.push(new Diagnostic(range, message, severity));
+                }
+
+                return a;
+            }, {
+                exits: [],
+                errors: [],
+                warnings: [],
+                diagnostics: [],
+            });
+
+            if (editor === window.activeTextEditor) {
+                if (showHighlights) {
+                    editor.setDecorations(errorDecorationType, errors);
+                    editor.setDecorations(warningDecorationType, warnings);
+                }
+
+                const configUri = Uri.parse(configFileDir + '.scss-lint.yml').with({scheme: 'file'});
+                this._diagnosticCollection.set(configUri, exits);
+                this._diagnosticCollection.set(doc.uri, diagnostics);
+
+                // Update the status bar
+                this._statusBarItem.text = eval(statusBarText);
+                this._statusBarItem.show();
+            }
+        });
     }
 
     dispose() {
